@@ -6,16 +6,22 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import org.slf4j.LoggerFactory
+import ru.quipy.common.utils.NamedThreadFactory
+import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 
 // Advice: always treat time as a Duration
 class PaymentExternalSystemAdapterImpl(
-    private val properties: PaymentAccountProperties,
+    internal val properties: PaymentAccountProperties,
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
@@ -33,11 +39,42 @@ class PaymentExternalSystemAdapterImpl(
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
+    private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
+
+     /*private class PriorityRunnable(
+        val deadline: Long,
+        private val runnable: Runnable
+    ) : Runnable, Comparable<PriorityRunnable> {
+        override fun run() = runnable.run()
+        override fun compareTo(other: PriorityRunnable): Int = this.deadline.compareTo(other.deadline)
+    }
+
+    private val queue = PriorityBlockingQueue<Runnable>(1000)
+
+    private val executor: ExecutorService = ThreadPoolExecutor(
+        20,
+        20,
+        60L,
+        TimeUnit.SECONDS,
+        queue
+    ).apply {
+        allowCoreThreadTimeOut(true)
+    }*/
 
     private val client = OkHttpClient.Builder().build()
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
-        logger.warn("[$accountName] Submitting payment request for payment $paymentId")
+       // logger.warn("[$accountName] Enqueue payment $paymentId (queueSize=${queue.size})")
+
+       // val task = Runnable {
+            doPerformPayment(paymentId, amount, paymentStartedAt)
+       // }
+
+       // executor.execute(PriorityRunnable(deadline, task))
+    }
+
+    private fun doPerformPayment(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
+        rateLimiter.tickBlocking()
 
         val transactionId = UUID.randomUUID()
 
