@@ -41,7 +41,7 @@ class PaymentExternalSystemAdapterImpl(
     private val parallelRequests = properties.parallelRequests
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
 
-     /*private class PriorityRunnable(
+     private class PriorityRunnable(
         val deadline: Long,
         private val runnable: Runnable
     ) : Runnable, Comparable<PriorityRunnable> {
@@ -52,25 +52,25 @@ class PaymentExternalSystemAdapterImpl(
     private val queue = PriorityBlockingQueue<Runnable>(1000)
 
     private val executor: ExecutorService = ThreadPoolExecutor(
-        20,
-        20,
+        10,
+        10,
         60L,
         TimeUnit.SECONDS,
         queue
     ).apply {
         allowCoreThreadTimeOut(true)
-    }*/
+    }
 
     private val client = OkHttpClient.Builder().build()
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
-       // logger.warn("[$accountName] Enqueue payment $paymentId (queueSize=${queue.size})")
+        logger.warn("[$accountName] Enqueue payment $paymentId (queueSize=${queue.size})")
 
-       // val task = Runnable {
+        val task = Runnable {
             doPerformPayment(paymentId, amount, paymentStartedAt)
-       // }
+        }
 
-       // executor.execute(PriorityRunnable(deadline, task))
+        executor.execute(PriorityRunnable(deadline, task))
     }
 
     private fun doPerformPayment(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
