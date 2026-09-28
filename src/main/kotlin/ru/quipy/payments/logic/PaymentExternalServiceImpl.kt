@@ -2,6 +2,12 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -12,6 +18,8 @@ import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.Executors
+import java.util.concurrent.locks.Lock
 
 
 // Advice: always treat time as a Duration
@@ -35,13 +43,18 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
+    private val semaphore = Semaphore(parallelRequests)
+    private val semaphoreScope = CoroutineScope(Dispatchers.IO)
 
     private val client = OkHttpClient.Builder().build()
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
-        logger.warn("[$accountName] Submitting payment request for payment $paymentId")
-
-        doPerformPayment(paymentId, amount, paymentStartedAt)
+        semaphoreScope.launch {
+            semaphore.withPermit {
+                logger.warn("[$accountName] Submitting payment request for payment $paymentId")
+                doPerformPayment(paymentId, amount, paymentStartedAt)
+            }
+        }
     }
 
     private fun doPerformPayment(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
