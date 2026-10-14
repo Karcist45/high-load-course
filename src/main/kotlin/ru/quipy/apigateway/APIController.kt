@@ -73,7 +73,7 @@ class APIController(
         } ?: throw IllegalArgumentException("No such order $orderId")
 
         return PaymentSubmissionDto(createdAt, paymentId).also {
-            processedRequestsCounter.increment()  // todo
+            processedRequestsCounter.increment()
         }
     }
 

@@ -3,12 +3,6 @@ package ru.quipy.payments.logic
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.micrometer.core.instrument.MeterRegistry
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -16,16 +10,10 @@ import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
-import ru.quipy.payments.exception.RateLimitExceededException
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.PriorityBlockingQueue
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.locks.Lock
+import java.util.concurrent.Semaphore
 
 
 // Advice: always treat time as a Duration
@@ -42,32 +30,18 @@ class PaymentExternalSystemAdapterImpl(
 
         val emptyBody = RequestBody.create(null, ByteArray(0))
         val mapper = ObjectMapper().registerKotlinModule()
-    }
 
+    }
+    private val semaphore = Semaphore(properties.parallelRequests)
     private val outgoingRequests = meterRegistry.counter("requests.outgoing")
-//    private val returnedTooManyRequests = meterRegistry.counter("requests.too_many")
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec
-    private val parallelRequests = properties.parallelRequests
-    private val queueLimit = 15
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
-    private val semaphore = Semaphore(parallelRequests)
-    private val semaphoreScope = CoroutineScope(Dispatchers.IO)
+
 
     private val client = OkHttpClient.Builder().build()
-
-    private val queue = PriorityBlockingQueue<Runnable>(1000)
-    private val executor: ExecutorService = ThreadPoolExecutor(
-        parallelRequests,
-        parallelRequests,
-        60L,
-        TimeUnit.SECONDS,
-        queue
-    ).apply {
-        allowCoreThreadTimeOut(true)
-    }
 
     private class PriorityRunnable(
         val deadline: Long,
@@ -78,33 +52,18 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
-
-
-        if (queue.size >= queueLimit) {
-//            returnedTooManyRequests.increment()
-            throw RateLimitExceededException(1 )
+        semaphore.acquire()
+        try {
+            logger.warn("[$accountName] Submitting payment request for payment $paymentId")
+            doPerformPayment(paymentId, amount, paymentStartedAt)
+        } finally {
+            semaphore.release()
         }
-        logger.warn("[$accountName] Enqueue payment $paymentId (queueSize=${queue.size})")
-
-        val task = Runnable {
-             doPerformPaymentWithSemaphore(paymentId, amount, paymentStartedAt)
-         }
-
-         executor.execute(PriorityRunnable(deadline, task))
-
     }
 
-    private fun doPerformPaymentWithSemaphore(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
-//        semaphoreScope.launch {
-//            semaphore.withPermit {
-                outgoingRequests.increment()
-//                logger.warn("[$accountName] Submitting payment request for payment $paymentId")
-                doPerformPayment(paymentId, amount, paymentStartedAt)
-//            }
-//        }
-    }
     private fun doPerformPayment(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
         rateLimiter.tickBlocking()
+        outgoingRequests.increment()
 
         val transactionId = UUID.randomUUID()
 
@@ -127,7 +86,7 @@ class PaymentExternalSystemAdapterImpl(
                     mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
                 } catch (e: Exception) {
                     logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: ${response.body?.string()}")
-                    ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, e.message)
+                    ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
                 }
 
                 logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")

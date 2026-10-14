@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import ru.quipy.core.EventSourcingService
+import ru.quipy.orders.repository.OrderRepository
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.logic.*
 import java.net.URI
@@ -24,7 +25,6 @@ class PaymentAccountsConfig (
     companion object {
         private val javaClient = HttpClient.newBuilder().build()
         private val mapper = ObjectMapper().registerKotlinModule().registerModules(JavaTimeModule())
-
     }
 
     @Value("\${payment.hostPort}")

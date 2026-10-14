@@ -1,7 +1,6 @@
 package ru.quipy.payments.exception
 
 import io.micrometer.core.instrument.MeterRegistry
-import org.springframework.cglib.core.TypeUtils.add
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -20,10 +19,7 @@ class RateLimitExceptionHandler (
         returnedTooManyRequests.increment()
         return ResponseEntity
             .status(HttpStatus.TOO_MANY_REQUESTS)
-//            .header("Retry-After",Instant.now().plusSeconds(ex.retryAfterSeconds).toEpochMilli().toString())
             .header(HttpHeaders.RETRY_AFTER,Instant.now().plusSeconds(ex.retryAfterSeconds).toEpochMilli().toString())
-//            .header(HttpHeaders.RETRY_AFTER,(System.currentTimeMillis() + ex.retryAfterSeconds).toString())
-
             .build()
     }
 }
