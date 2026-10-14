@@ -2,6 +2,7 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -15,10 +16,15 @@ import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import ru.quipy.payments.exception.RateLimitExceededException
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.Lock
 
 
@@ -28,6 +34,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
+    meterRegistry: MeterRegistry,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -37,26 +44,65 @@ class PaymentExternalSystemAdapterImpl(
         val mapper = ObjectMapper().registerKotlinModule()
     }
 
+    private val outgoingRequests = meterRegistry.counter("requests.outgoing")
+//    private val returnedTooManyRequests = meterRegistry.counter("requests.too_many")
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
+    private val queueLimit = 15
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
     private val semaphore = Semaphore(parallelRequests)
     private val semaphoreScope = CoroutineScope(Dispatchers.IO)
 
     private val client = OkHttpClient.Builder().build()
 
-    override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
-        semaphoreScope.launch {
-            semaphore.withPermit {
-                logger.warn("[$accountName] Submitting payment request for payment $paymentId")
-                doPerformPayment(paymentId, amount, paymentStartedAt)
-            }
-        }
+    private val queue = PriorityBlockingQueue<Runnable>(1000)
+    private val executor: ExecutorService = ThreadPoolExecutor(
+        parallelRequests,
+        parallelRequests,
+        60L,
+        TimeUnit.SECONDS,
+        queue
+    ).apply {
+        allowCoreThreadTimeOut(true)
     }
 
+    private class PriorityRunnable(
+        val deadline: Long,
+        private val runnable: Runnable
+    ) : Runnable, Comparable<PriorityRunnable> {
+        override fun run() = runnable.run()
+        override fun compareTo(other: PriorityRunnable): Int = this.deadline.compareTo(other.deadline)
+    }
+
+    override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+
+
+        if (queue.size >= queueLimit) {
+//            returnedTooManyRequests.increment()
+            throw RateLimitExceededException(1 )
+        }
+        logger.warn("[$accountName] Enqueue payment $paymentId (queueSize=${queue.size})")
+
+        val task = Runnable {
+             doPerformPaymentWithSemaphore(paymentId, amount, paymentStartedAt)
+         }
+
+         executor.execute(PriorityRunnable(deadline, task))
+
+    }
+
+    private fun doPerformPaymentWithSemaphore(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
+//        semaphoreScope.launch {
+//            semaphore.withPermit {
+                outgoingRequests.increment()
+//                logger.warn("[$accountName] Submitting payment request for payment $paymentId")
+                doPerformPayment(paymentId, amount, paymentStartedAt)
+//            }
+//        }
+    }
     private fun doPerformPayment(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
         rateLimiter.tickBlocking()
 
