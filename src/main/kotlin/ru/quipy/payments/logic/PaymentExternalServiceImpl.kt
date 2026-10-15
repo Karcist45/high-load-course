@@ -2,12 +2,7 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
+import io.micrometer.core.instrument.MeterRegistry
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -18,8 +13,7 @@ import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
-import java.util.concurrent.Executors
-import java.util.concurrent.locks.Lock
+import java.util.concurrent.Semaphore
 
 
 // Advice: always treat time as a Duration
@@ -28,6 +22,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
+    meterRegistry: MeterRegistry,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -35,30 +30,40 @@ class PaymentExternalSystemAdapterImpl(
 
         val emptyBody = RequestBody.create(null, ByteArray(0))
         val mapper = ObjectMapper().registerKotlinModule()
-    }
 
+    }
+    private val semaphore = Semaphore(properties.parallelRequests)
+    private val outgoingRequests = meterRegistry.counter("requests.outgoing")
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec
-    private val parallelRequests = properties.parallelRequests
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
-    private val semaphore = Semaphore(parallelRequests)
-    private val semaphoreScope = CoroutineScope(Dispatchers.IO)
+
 
     private val client = OkHttpClient.Builder().build()
 
+    private class PriorityRunnable(
+        val deadline: Long,
+        private val runnable: Runnable
+    ) : Runnable, Comparable<PriorityRunnable> {
+        override fun run() = runnable.run()
+        override fun compareTo(other: PriorityRunnable): Int = this.deadline.compareTo(other.deadline)
+    }
+
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
-        semaphoreScope.launch {
-            semaphore.withPermit {
-                logger.warn("[$accountName] Submitting payment request for payment $paymentId")
-                doPerformPayment(paymentId, amount, paymentStartedAt)
-            }
+        semaphore.acquire()
+        try {
+            logger.warn("[$accountName] Submitting payment request for payment $paymentId")
+            doPerformPayment(paymentId, amount, paymentStartedAt)
+        } finally {
+            semaphore.release()
         }
     }
 
     private fun doPerformPayment(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
         rateLimiter.tickBlocking()
+        outgoingRequests.increment()
 
         val transactionId = UUID.randomUUID()
 
@@ -81,7 +86,7 @@ class PaymentExternalSystemAdapterImpl(
                     mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
                 } catch (e: Exception) {
                     logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: ${response.body?.string()}")
-                    ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, e.message)
+                    ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
                 }
 
                 logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
