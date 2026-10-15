@@ -38,7 +38,7 @@ class OrderPayer
     @Autowired
     private lateinit var paymentService: PaymentService
     private val queue = PriorityBlockingQueue<Runnable>(1000)
-    private val queueLimit = 15
+    private val queueLimit = 42L
 
     private val paymentExecutor = ThreadPoolExecutor(
         5,
@@ -53,7 +53,7 @@ class OrderPayer
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
         if (queue.size >= queueLimit) {
-            throw RateLimitExceededException(2L * queueLimit)
+            throw RateLimitExceededException(queueLimit)
         }
         paymentExecutor.execute(PriorityRunnable(deadline) {
             val createdEvent = paymentESService.create {
