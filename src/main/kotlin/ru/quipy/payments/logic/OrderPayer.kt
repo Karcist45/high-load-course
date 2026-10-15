@@ -53,7 +53,7 @@ class OrderPayer
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
         if (queue.size >= queueLimit) {
-            throw RateLimitExceededException(1)
+            throw RateLimitExceededException(2L * queueLimit)
         }
         paymentExecutor.execute(PriorityRunnable(deadline) {
             val createdEvent = paymentESService.create {

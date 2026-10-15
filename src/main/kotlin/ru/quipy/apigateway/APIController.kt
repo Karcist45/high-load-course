@@ -66,11 +66,12 @@ class APIController(
     fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): PaymentSubmissionDto {
         incomingRequestsCounter.increment()
         val paymentId = UUID.randomUUID()
-        val createdAt:Long
-        orderRepository.findById(orderId)?.also {
-            createdAt = orderPayer.processPayment(orderId, it.price, paymentId, deadline)
+        val order = orderRepository.findById(orderId)?.let {
             orderRepository.save(it.copy(status = OrderStatus.PAYMENT_IN_PROGRESS))
+            it
         } ?: throw IllegalArgumentException("No such order $orderId")
+
+        val createdAt = orderPayer.processPayment(orderId, order.price, paymentId, deadline)
 
         return PaymentSubmissionDto(createdAt, paymentId).also {
             processedRequestsCounter.increment()
