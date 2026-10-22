@@ -52,6 +52,7 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+        rateLimiter.tickBlocking()
         semaphore.acquire()
         try {
             logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -62,7 +63,6 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     private fun doPerformPayment(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
-        rateLimiter.tickBlocking()
         outgoingRequests.increment()
 
         val transactionId = UUID.randomUUID()
