@@ -19,7 +19,7 @@ class RateLimitExceptionHandler (
         returnedTooManyRequests.increment()
         return ResponseEntity
             .status(HttpStatus.TOO_MANY_REQUESTS)
-            .header(HttpHeaders.RETRY_AFTER,Instant.now().plusSeconds(ex.retryAfterSeconds).toEpochMilli().toString())
+            .header(HttpHeaders.RETRY_AFTER,Instant.now().plusMillis(ex.retryAfterMillis).toEpochMilli().toString())
             .build()
     }
 }

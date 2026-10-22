@@ -1,3 +1,3 @@
 package ru.quipy.payments.exception
 
-class RateLimitExceededException(val retryAfterSeconds: Long) : RuntimeException()
+class RateLimitExceededException(val retryAfterMillis: Long) : RuntimeException()

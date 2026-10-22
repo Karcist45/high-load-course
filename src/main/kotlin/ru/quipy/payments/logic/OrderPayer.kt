@@ -11,7 +11,6 @@ import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.exception.RateLimitExceededException
-import java.time.Duration
 import java.util.*
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.PriorityBlockingQueue
@@ -39,13 +38,11 @@ class OrderPayer
     @Autowired
     private lateinit var paymentService: PaymentService
     private val queue = PriorityBlockingQueue<Runnable>(1000)
-    private val queueLimit = 10L
-    private val threadLimit = 100
-    private val processingTime = Duration.ofSeconds(3)
+    private val queueLimit = 1L
 
     private val paymentExecutor = ThreadPoolExecutor(
-        threadLimit,
-        threadLimit,
+        110,
+        110,
         0L,
         TimeUnit.MILLISECONDS,
         queue,
@@ -56,7 +53,7 @@ class OrderPayer
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
         if (queue.size >= queueLimit) {
-            throw RateLimitExceededException((queueLimit + 1) * processingTime.seconds / threadLimit)
+            throw RateLimitExceededException(700)
         }
         paymentExecutor.execute(PriorityRunnable(deadline) {
             val createdEvent = paymentESService.create {
