@@ -14,7 +14,7 @@ interface PaymentService {
  * Adapter for external payment system. Represents the account in the external system.
  *
  * !!! You can extend the interface with additional methods if needed. !!!
-
+ *
  */
 interface PaymentExternalSystemAdapter {
     fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long)
@@ -24,6 +24,12 @@ interface PaymentExternalSystemAdapter {
     fun price(): Int
 
     fun isEnabled(): Boolean
+
+    fun rateLimitPerSec(): Int = 11
+
+    fun parallelRequests(): Int = 20
+
+    fun averageProcessingTime(): Duration = Duration.ofMillis(1800)
 }
 
 /**
