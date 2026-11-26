@@ -3,6 +3,7 @@ package ru.quipy.payments.logic
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Timer
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -50,6 +51,12 @@ class PaymentExternalSystemAdapterImpl(
     private val retriesRecovered = meterRegistry.counter("payment.retries.outcome", "service", serviceName, "accountName", accountName, "outcome", "success")
     private val retriesExhausted = meterRegistry.counter("payment.retries.outcome", "service", serviceName, "accountName", accountName, "outcome", "failed")
 
+    private val paymentDurationTimer = Timer.builder("payment.duration")
+        .tags("service", serviceName, "accountName", accountName)
+        .publishPercentiles(0.5, 0.75, 0.9, 0.95, 0.99)
+        .publishPercentileHistogram()
+        .register(meterRegistry)
+
     private val minProcessingTime = requestAverageProcessingTime.toMillis() / 2
 
     private val networkMarginMillis = requestAverageProcessingTime.toMillis() / 6
@@ -88,7 +95,7 @@ class PaymentExternalSystemAdapterImpl(
         while (needRetry) {
             needRetry = false
 
-            if (minProcessingTime > deadline) {
+            if (now() + minProcessingTime > deadline) {
                 logger.warn("[$accountName] Discarding payment $paymentId before attempt ${retryCount + 1}: remaining time (${deadline - now()} ms) < required ($minProcessingTime ms)")
                 if (retryCount == 0) deadlineDroppedInitial.increment() else deadlineDroppedRetry.increment()
                 retriesExhausted.increment()
@@ -122,21 +129,28 @@ class PaymentExternalSystemAdapterImpl(
                     post(emptyBody)
                 }.build()
 
-                client.newCall(request).execute().use { response ->
-                    val body = try {
-                        mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
-                    } catch (e: Exception) {
-                        logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: ${response.body?.string()}")
-                        ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
+
+                val callStart = now()
+                try {
+                    client.newCall(request).execute().use { response ->
+                        val body = try {
+                            mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
+                        } catch (e: Exception) {
+                            logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: ${response.body?.string()}")
+                            ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
+                        }
+
+                        logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
+
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(body.result, now(), transactionId, reason = body.message)
+                        }
+
+                        callSucceeded = body.result
                     }
-
-                    logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
-
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(body.result, now(), transactionId, reason = body.message)
-                    }
-
-                    callSucceeded = body.result
+                } finally {
+                    val callDurationMillis = now() - callStart
+                    paymentDurationTimer.record(Duration.ofMillis(callDurationMillis))
                 }
             } catch (e: Exception) {
                 when (e) {
