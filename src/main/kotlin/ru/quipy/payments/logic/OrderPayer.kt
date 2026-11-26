@@ -26,16 +26,13 @@ class OrderPayer(
     @Autowired private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     @Autowired(required = false) private val paymentAccounts: List<PaymentExternalSystemAdapter>?,
     @Value("\${case.rps}")
-    private val configuredTestRate: Int = DEFAULT_TEST_RATE_PER_SECOND,
+    private val testRate: Int,
     @Value("\${case.processing-time-millis}")
-    private val configuredTestProcessingTime: Long = DEFAULT_TEST_PROCESSING_TIME_MILLIS,
+    private val testProcessingTime: Long,
 ) {
 
     companion object {
         val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
-
-        const val DEFAULT_TEST_RATE_PER_SECOND = 15
-        const val DEFAULT_TEST_PROCESSING_TIME_MILLIS = 2500L
 
         private val WINDOW: Duration = Duration.ofSeconds(1)
     }
@@ -48,39 +45,24 @@ class OrderPayer(
         override fun compareTo(other: PriorityRunnable): Int = this.deadline.compareTo(other.deadline)
     }
 
-    private val activeAccounts = paymentAccounts?.filter { it.isEnabled() }?.ifEmpty { paymentAccounts } ?: emptyList()
-    val accountRateLimit: Int = if (activeAccounts.isNotEmpty()) {
-        activeAccounts.minOf { it.rateLimitPerSec() }
-    } else {
-        configuredTestRate
-    }
-    val parallelRequests: Int = if (activeAccounts.isNotEmpty()) {
-        activeAccounts.maxOf { it.parallelRequests() }
-    } else {
-        20
-    }
-    val avgProcessingTimeMillis: Long = if (activeAccounts.isNotEmpty()) {
-        activeAccounts.map { it.averageProcessingTime().toMillis() }.average().toLong()
-    } else {
-        1800L
-    }
+    private val activeAccounts = paymentAccounts!!.filter { it.isEnabled() }
+    val accountRateLimit: Int = activeAccounts.minOf { it.rateLimitPerSec() }
 
-    val testRate: Int = if (configuredTestRate > 0) configuredTestRate else accountRateLimit
-    val testProcessingTime: Long = if (configuredTestProcessingTime > 0) configuredTestProcessingTime else DEFAULT_TEST_PROCESSING_TIME_MILLIS
+    val parallelRequests: Int = activeAccounts.maxOf { it.parallelRequests() }
+
+    val avgProcessingTimeMillis: Long = activeAccounts.map { it.averageProcessingTime().toMillis() }.average().toLong()
+
+    val queueLimit: Long = (testProcessingTime * accountRateLimit) / Duration.ofSeconds(1).toMillis()
 
     val leakRate: Long = accountRateLimit.toLong()
+    val leakBucketSize: Int = queueLimit.toInt()
 
-    val tokenRate: Int = (accountRateLimit * 1.28).toInt()
+    val tokenRate: Int = accountRateLimit
+    val tokenBucketCapacity: Int = maxOf(parallelRequests, accountRateLimit)
 
-    val queueLimit: Long = ((testProcessingTime / 1000.0) * accountRateLimit).toLong()
+    val retryAfterMillis: Long = Duration.ofSeconds(1).toMillis() / accountRateLimit
 
-    val leakBucketSize: Int = (queueLimit * 2 / 3).toInt()
-
-    val tokenBucketCapacity: Int = leakBucketSize / 2
-
-    val retryAfterMillis: Long =  (1650L / accountRateLimit)
-
-    val threads: Int =  (accountRateLimit * 1.28).toInt()
+    val threads: Int = maxOf(parallelRequests, accountRateLimit)
 
     init {
         logger.info(
@@ -126,7 +108,7 @@ class OrderPayer(
             throw RateLimitExceededException(retryAfterMillis)
         }
 
-        val estimatedWaitMillis = (queue.size.toDouble() / accountRateLimit * 1000.0).toLong() + avgProcessingTimeMillis
+        val estimatedWaitMillis = (queue.size.toDouble() / accountRateLimit * Duration.ofSeconds(1).toMillis()).toLong() + avgProcessingTimeMillis
         if (estimatedWaitMillis > remainingMillis) {
             throw RateLimitExceededException(retryAfterMillis)
         }
